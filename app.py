@@ -4,8 +4,8 @@ from datetime import date
 from typing import Any
 
 import pandas as pd
+import requests
 import streamlit as st
-from supabase import Client, create_client
 
 
 st.set_page_config(
@@ -47,32 +47,21 @@ st.markdown(
 
 
 # -----------------------------
-# Session state / connection
+# Default Supabase connection
 # -----------------------------
-DEFAULT_STATE = {
-    "connected": False,
-    "supabase_url": "",
-    "supabase_key": "",
-    "flash": None,
+# Publishable key is intentionally embedded for this training app.
+# Do NOT replace this with a service-role/secret key.
+SUPABASE_REST_URL = "https://xrxnlyqpncpcmpfnuafr.supabase.co/rest/v1"
+SUPABASE_KEY = "sb_publishable_2g8_0-OVbgjn5jBMMAd7XQ_r43C2nLE"
+REQUEST_TIMEOUT = 20
+
+DEFAULT_HEADERS = {
+    "apikey": SUPABASE_KEY,
+    "Accept": "application/json",
 }
-for key, value in DEFAULT_STATE.items():
-    if key not in st.session_state:
-        st.session_state[key] = value
 
-
-def normalize_url(value: str) -> str:
-    value = (value or "").strip().rstrip("/")
-    if value.endswith("/rest/v1"):
-        value = value[: -len("/rest/v1")]
-    if not value.startswith("https://") or ".supabase.co" not in value:
-        raise ValueError("Supabase URL 형식을 확인해 주세요. 예: https://xxxx.supabase.co")
-    return value
-
-
-def make_client() -> Client:
-    if not st.session_state.connected:
-        raise RuntimeError("Supabase에 먼저 연결해 주세요.")
-    return create_client(st.session_state.supabase_url, st.session_state.supabase_key)
+if "flash" not in st.session_state:
+    st.session_state.flash = None
 
 
 def set_flash(kind: str, message: str) -> None:
@@ -91,69 +80,14 @@ def show_flash() -> None:
     else:
         st.error(message)
 
-
-with st.expander("🔌 Supabase 연결 설정", expanded=not st.session_state.connected):
-    with st.form("connection_form"):
-        c1, c2 = st.columns([1.2, 1.2])
-        with c1:
-            url_input = st.text_input(
-                "Supabase URL",
-                value=st.session_state.supabase_url,
-                placeholder="https://your-project.supabase.co",
-            )
-        with c2:
-            key_input = st.text_input(
-                "Supabase Publishable / anon Key",
-                value=st.session_state.supabase_key,
-                type="password",
-                placeholder="sb_publishable_... 또는 anon key",
-            )
-        connect = st.form_submit_button("연결", type="primary")
-
-    if connect:
-        try:
-            url = normalize_url(url_input)
-            key = key_input.strip()
-            if not key:
-                raise ValueError("Supabase Key를 입력해 주세요.")
-            if key.startswith("sb_secret_"):
-                raise ValueError("Secret / service-role 계열 키는 이 앱에 입력하지 마세요. Publishable/anon key를 사용해 주세요.")
-
-            test_client = create_client(url, key)
-            test_client.table("branches").select("branch_id").limit(1).execute()
-            st.session_state.supabase_url = url
-            st.session_state.supabase_key = key
-            st.session_state.connected = True
-            set_flash("success", "Supabase 연결에 성공했습니다.")
-            st.rerun()
-        except Exception as exc:
-            st.error(f"연결 실패: {exc}")
-
-    if st.session_state.connected:
-        st.success("DB 연결됨")
-        st.caption("연결 정보는 현재 Streamlit 세션의 Session State에 보관됩니다.")
-        if st.button("연결 해제", type="secondary"):
-            st.session_state.connected = False
-            st.session_state.supabase_url = ""
-            st.session_state.supabase_key = ""
-            set_flash("success", "연결을 해제했습니다.")
-            st.rerun()
-
+st.caption("Supabase 기본 연결 사용 중 · Publishable Key는 apikey 헤더로만 전송합니다.")
 st.warning(
-    "현재처럼 Publishable/anon key로 CRUD를 허용하려면 Supabase의 GRANT/RLS 정책이 해당 작업을 허용해야 합니다. "
-    "공개 배포용이라면 인증과 RLS를 적용하세요."
+    "교육/실습용 설정입니다. 현재 Publishable/anon 역할에 쓰기 권한이 열려 있으면 이 앱을 접속할 수 있는 사용자도 데이터를 추가·수정·삭제할 수 있습니다."
 )
 show_flash()
 
-if not st.session_state.connected:
-    st.info("Supabase URL과 Publishable/anon Key를 입력하고 연결하면 대시보드가 표시됩니다.")
-    st.stop()
-
-client = make_client()
-
-
 # -----------------------------
-# Data access helpers
+# Data access helpers (Supabase REST API)
 # -----------------------------
 TABLE_PK = {
     "members": "member_id",
@@ -163,24 +97,67 @@ TABLE_PK = {
 }
 
 
+def rest_request(
+    method: str,
+    table: str,
+    *,
+    params: dict[str, Any] | None = None,
+    payload: dict[str, Any] | None = None,
+    prefer: str | None = None,
+) -> Any:
+    headers = dict(DEFAULT_HEADERS)
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    if prefer:
+        headers["Prefer"] = prefer
+
+    url = f"{SUPABASE_REST_URL}/{table}"
+    try:
+        response = requests.request(
+            method=method,
+            url=url,
+            headers=headers,
+            params=params,
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Supabase 요청 연결 오류: {exc}") from exc
+
+    if not response.ok:
+        detail = response.text.strip()
+        try:
+            body = response.json()
+            detail = body.get("message") or body.get("details") or body.get("hint") or detail
+        except Exception:
+            pass
+        raise RuntimeError(f"Supabase REST 요청 실패 ({response.status_code}): {detail}")
+
+    if response.status_code == 204 or not response.text.strip():
+        return None
+    return response.json()
+
+
 def fetch_all(table: str, order_by: str) -> list[dict[str, Any]]:
     """Fetch all rows in pages because Data API responses can be capped."""
     rows: list[dict[str, Any]] = []
     page_size = 1000
-    start = 0
+    offset = 0
     while True:
-        response = (
-            client.table(table)
-            .select("*")
-            .order(order_by)
-            .range(start, start + page_size - 1)
-            .execute()
-        )
-        batch = response.data or []
+        batch = rest_request(
+            "GET",
+            table,
+            params={
+                "select": "*",
+                "order": f"{order_by}.asc",
+                "limit": page_size,
+                "offset": offset,
+            },
+        ) or []
         rows.extend(batch)
         if len(batch) < page_size:
             break
-        start += page_size
+        offset += page_size
     return rows
 
 
@@ -193,27 +170,70 @@ def load_data() -> dict[str, list[dict[str, Any]]]:
     }
 
 
-def next_id(rows: list[dict[str, Any]], pk: str) -> int:
-    return max((int(row[pk]) for row in rows), default=0) + 1
+def get_next_id(table: str, pk: str) -> int:
+    """Read the latest PK immediately before insert to avoid stale Streamlit state."""
+    rows = rest_request(
+        "GET",
+        table,
+        params={"select": pk, "order": f"{pk}.desc", "limit": 1},
+    ) or []
+    return int(rows[0][pk]) + 1 if rows else 1
+
+
+def verify_row(table: str, pk: str, row_id: int) -> dict[str, Any]:
+    rows = rest_request(
+        "GET",
+        table,
+        params={"select": "*", pk: f"eq.{row_id}", "limit": 1},
+    ) or []
+    if not rows:
+        raise RuntimeError(f"저장 요청 후 {table}.{pk}={row_id} 행을 재조회하지 못했습니다.")
+    return rows[0]
 
 
 def do_insert(table: str, payload: dict[str, Any]) -> None:
-    client.table(table).insert(payload).execute()
+    pk = TABLE_PK[table]
+    row_id = int(payload[pk])
+    rest_request(
+        "POST",
+        table,
+        payload=payload,
+        prefer="return=representation",
+    )
+    verify_row(table, pk, row_id)
 
 
 def do_update(table: str, pk: str, row_id: int, payload: dict[str, Any]) -> None:
-    client.table(table).update(payload).eq(pk, row_id).execute()
+    rest_request(
+        "PATCH",
+        table,
+        params={pk: f"eq.{row_id}"},
+        payload=payload,
+        prefer="return=representation",
+    )
+    verify_row(table, pk, row_id)
 
 
 def do_delete(table: str, pk: str, row_id: int) -> None:
-    client.table(table).delete().eq(pk, row_id).execute()
-
+    rest_request(
+        "DELETE",
+        table,
+        params={pk: f"eq.{row_id}"},
+        prefer="return=representation",
+    )
+    rows = rest_request(
+        "GET",
+        table,
+        params={"select": pk, pk: f"eq.{row_id}", "limit": 1},
+    ) or []
+    if rows:
+        raise RuntimeError(f"삭제 후에도 {table}.{pk}={row_id} 행이 남아 있습니다.")
 
 try:
     with st.spinner("데이터를 불러오는 중입니다..."):
         data = load_data()
 except Exception as exc:
-    st.error(f"데이터 조회 실패: {exc}\n\nURL, Key, GRANT/RLS 정책을 확인해 주세요.")
+    st.error(f"데이터 조회 실패: {exc}\n\n기본 Supabase 연결 정보와 GRANT/RLS 정책을 확인해 주세요.")
     st.stop()
 
 members = data["members"]
@@ -278,7 +298,7 @@ with chart_left:
     if branch_df.empty:
         st.info("지점/예적금 데이터가 없습니다.")
     else:
-        st.bar_chart(branch_df, x="지점", y="예적금 잔액", width="stretch")
+        st.bar_chart(branch_df, x="지점", y="예적금 잔액", use_container_width=True)
 
 with chart_right:
     st.subheader("대출 상태")
@@ -303,7 +323,7 @@ with chart_right:
                     ],
                 },
             },
-            width="stretch",
+            use_container_width=True,
         )
 
 st.divider()
@@ -333,11 +353,18 @@ def filter_df(df: pd.DataFrame, query: str) -> pd.DataFrame:
     return df[mask]
 
 
+def rerun_app() -> None:
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
+
 def run_change(action, success_message: str) -> None:
     try:
         action()
         set_flash("success", success_message)
-        st.rerun()
+        rerun_app()
     except Exception as exc:
         st.error(f"작업 실패: {exc}")
 
@@ -367,7 +394,7 @@ def render_members() -> None:
         q = st.text_input("조합원 검색", placeholder="이름, 전화번호, 지점 등", key="member_search")
         filtered = filter_df(df, q)
         st.caption(f"{len(filtered):,}건")
-        st.dataframe(filtered, width="stretch", hide_index=True)
+        st.dataframe(filtered, use_container_width=True, hide_index=True)
         dataframe_download(filtered, "members.csv", "download_members")
 
     with create:
@@ -386,7 +413,7 @@ def render_members() -> None:
                 st.error("필수값을 입력해 주세요.")
             else:
                 payload = {
-                    "member_id": next_id(members, "member_id"),
+                    "member_id": get_next_id("members", "member_id"),
                     "name": name.strip(),
                     "birth_date": birth_date.isoformat(),
                     "gender": gender,
@@ -469,7 +496,7 @@ def render_accounts() -> None:
         st.caption(f"{len(filtered):,}건")
         st.dataframe(
             filtered,
-            width="stretch",
+            use_container_width=True,
             hide_index=True,
             column_config={
                 "잔액": st.column_config.NumberColumn(format="%,.0f원"),
@@ -495,7 +522,7 @@ def render_accounts() -> None:
                 submit = st.form_submit_button("계좌 추가", type="primary")
             if submit:
                 payload = {
-                    "account_id": next_id(accounts, "account_id"),
+                    "account_id": get_next_id("deposit_accounts", "account_id"),
                     "member_id": int(member_id),
                     "branch_id": derived_branch,
                     "account_type": account_type,
@@ -580,7 +607,7 @@ def render_loans() -> None:
         st.caption(f"{len(filtered):,}건")
         st.dataframe(
             filtered,
-            width="stretch",
+            use_container_width=True,
             hide_index=True,
             column_config={
                 "대출금액": st.column_config.NumberColumn(format="%,.0f원"),
@@ -611,7 +638,7 @@ def render_loans() -> None:
                     st.error("만기일은 시작일보다 빠를 수 없습니다.")
                 else:
                     payload = {
-                        "loan_id": next_id(loans, "loan_id"),
+                        "loan_id": get_next_id("loans", "loan_id"),
                         "member_id": int(member_id),
                         "branch_id": derived_branch,
                         "loan_type": loan_type,
@@ -697,7 +724,7 @@ def render_branches() -> None:
         q = st.text_input("지점 검색", placeholder="지점명, 지역, 담당자", key="branch_search")
         filtered = filter_df(df, q)
         st.caption(f"{len(filtered):,}건")
-        st.dataframe(filtered, width="stretch", hide_index=True)
+        st.dataframe(filtered, use_container_width=True, hide_index=True)
         dataframe_download(filtered, "branches.csv", "download_branches")
 
     with create:
@@ -712,7 +739,7 @@ def render_branches() -> None:
                 st.error("필수값을 입력해 주세요.")
             else:
                 payload = {
-                    "branch_id": next_id(branches, "branch_id"),
+                    "branch_id": get_next_id("branches", "branch_id"),
                     "branch_name": branch_name.strip(),
                     "region": region.strip(),
                     "manager_name": manager_name.strip(),
@@ -770,8 +797,8 @@ with main_tabs[3]:
 
 st.divider()
 if st.button("🔄 전체 새로고침"):
-    st.rerun()
+    rerun_app()
 
 st.caption(
-    "보안 안내: 이 앱에는 Service Role/Secret Key를 넣지 마세요. 공개 환경에서는 로그인과 RLS 정책을 적용하는 것을 권장합니다."
+    "보안 안내: 코드에는 Publishable key만 사용했습니다. 현재처럼 anon CRUD 권한을 허용한 상태로 공개 배포하지 않는 것을 권장합니다."
 )
