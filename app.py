@@ -57,7 +57,6 @@ REQUEST_TIMEOUT = 20
 
 DEFAULT_HEADERS = {
     "apikey": SUPABASE_KEY,
-    "Authorization": f"Bearer {SUPABASE_KEY}",
     "Accept": "application/json",
 }
 
@@ -81,7 +80,7 @@ def show_flash() -> None:
     else:
         st.error(message)
 
-st.caption("Supabase 기본 연결 사용 중 · 별도 URL/Key 입력 없이 바로 조회 및 CRUD를 수행합니다.")
+st.caption("Supabase 기본 연결 사용 중 · Publishable Key는 apikey 헤더로만 전송합니다.")
 st.warning(
     "교육/실습용 설정입니다. 현재 Publishable/anon 역할에 쓰기 권한이 열려 있으면 이 앱을 접속할 수 있는 사용자도 데이터를 추가·수정·삭제할 수 있습니다."
 )
@@ -299,7 +298,7 @@ with chart_left:
     if branch_df.empty:
         st.info("지점/예적금 데이터가 없습니다.")
     else:
-        st.bar_chart(branch_df, x="지점", y="예적금 잔액", width="stretch")
+        st.bar_chart(branch_df, x="지점", y="예적금 잔액", use_container_width=True)
 
 with chart_right:
     st.subheader("대출 상태")
@@ -324,7 +323,7 @@ with chart_right:
                     ],
                 },
             },
-            width="stretch",
+            use_container_width=True,
         )
 
 st.divider()
@@ -354,11 +353,18 @@ def filter_df(df: pd.DataFrame, query: str) -> pd.DataFrame:
     return df[mask]
 
 
+def rerun_app() -> None:
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
+
 def run_change(action, success_message: str) -> None:
     try:
         action()
         set_flash("success", success_message)
-        st.rerun()
+        rerun_app()
     except Exception as exc:
         st.error(f"작업 실패: {exc}")
 
@@ -388,7 +394,7 @@ def render_members() -> None:
         q = st.text_input("조합원 검색", placeholder="이름, 전화번호, 지점 등", key="member_search")
         filtered = filter_df(df, q)
         st.caption(f"{len(filtered):,}건")
-        st.dataframe(filtered, width="stretch", hide_index=True)
+        st.dataframe(filtered, use_container_width=True, hide_index=True)
         dataframe_download(filtered, "members.csv", "download_members")
 
     with create:
@@ -490,7 +496,7 @@ def render_accounts() -> None:
         st.caption(f"{len(filtered):,}건")
         st.dataframe(
             filtered,
-            width="stretch",
+            use_container_width=True,
             hide_index=True,
             column_config={
                 "잔액": st.column_config.NumberColumn(format="%,.0f원"),
@@ -601,7 +607,7 @@ def render_loans() -> None:
         st.caption(f"{len(filtered):,}건")
         st.dataframe(
             filtered,
-            width="stretch",
+            use_container_width=True,
             hide_index=True,
             column_config={
                 "대출금액": st.column_config.NumberColumn(format="%,.0f원"),
@@ -718,7 +724,7 @@ def render_branches() -> None:
         q = st.text_input("지점 검색", placeholder="지점명, 지역, 담당자", key="branch_search")
         filtered = filter_df(df, q)
         st.caption(f"{len(filtered):,}건")
-        st.dataframe(filtered, width="stretch", hide_index=True)
+        st.dataframe(filtered, use_container_width=True, hide_index=True)
         dataframe_download(filtered, "branches.csv", "download_branches")
 
     with create:
@@ -791,7 +797,7 @@ with main_tabs[3]:
 
 st.divider()
 if st.button("🔄 전체 새로고침"):
-    st.rerun()
+    rerun_app()
 
 st.caption(
     "보안 안내: 코드에는 Publishable key만 사용했습니다. 현재처럼 anon CRUD 권한을 허용한 상태로 공개 배포하지 않는 것을 권장합니다."
